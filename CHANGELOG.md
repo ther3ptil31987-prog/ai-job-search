@@ -15,6 +15,51 @@ per-file diff commands.
 
 ### Fixed
 
+- **`jobnet-search` and `jobdanmark-search` search results now carry the contract's `id`
+  field** (`search.ts` and `search-normalization.test.ts` in both CLIs, both `SKILL.md`s) -
+  `/add-portal`'s contract says every search result has at least `id`, `title`, `company`,
+  `location`, `date`, `url`, and the four other shipped CLIs emit `id`. When #340 added the
+  `company`/`location`/`date`/`url` aliases to these two, `id` was left out: jobnet exposed the
+  value only as `jobAdId`, jobdanmark only as `slug`, so a consumer reading every portal's
+  JSON through one shape had to special-case both to call `detail`. Purely additive: `id`
+  equals `jobAdId` on jobnet and `slug` on jobdanmark, the native keys stay, nothing is
+  renamed. The additive-contract test in each CLI now asserts `id` and its equality with the
+  native key; both fail on master.
+
+- **`jobdanmark-search detail` renders a JSON-LD description as text instead of passing
+  the markup through** (`.agents/skills/jobdanmark-search/cli/src/commands/detail.ts`,
+  `tests/detail-jsonld.test.ts`) - the JSON-LD branch emitted `jobPosting.description`
+  verbatim, so `detail --format plain` printed
+  `description: <p>Vi søger en udvikler til R&D.</p><ul><li>Python & Go</li>...` while the
+  rendered-HTML branch of the same command printed one clean line per paragraph and bullet:
+  two description shapes from one command depending on which page layout it hit, and the
+  markup landed in `/scrape`'s stored snippet and `/rank`'s agent context as-is. The
+  portal contract (`/add-portal` Step 4) asks for "readable text (entities decoded, tags
+  stripped, paragraph breaks preserved)". The JSON-LD branch now renders the HTML through
+  `node-html-parser`'s `structuredText` - one line per block element, entities decoded, tags
+  gone - which is the shape the fallback already produces. A plain-text description is
+  unchanged, an absent one stays `""`. The JSON-LD test that pinned the raw `<p>...</p>` now
+  expects the text, plus two new cases; the HTML case fails on master.
+
+- **`job_key.py` no longer gives two postings one key when a title or company is partly
+  non-Latin** (`tools/job_key.py`, `tests/test_job_key.py`) - the hash fallbacks from #487
+  and #502 fired only when the slug was completely empty, so a mixed-script name kept its
+  Latin or digit fragment and skipped them: `Программист 1С` and `Аналитик 1С` at one company
+  both keyed as `company-6d769a_1`, `Python-разработчик` and `Python-аналитик` as `..._python`,
+  `Сбер AI` and `Яндекс AI` as `ai_...`. `/scrape` Step 4 then dropped the second posting as
+  already seen, and because the dict key is overwritten, `--audit` could not report the
+  collision as a duplicate URL either. "1С" titles and "N категории" grade suffixes are
+  everyday Russian listings on freehire, the shipped multi-market portal. The fold is now
+  treated as lossy whenever it drops a letter outside the Latin script, and the existing
+  fallbacks take over: the title half uses the portal's numeric id or the URL hash with the
+  fragment kept as a readable prefix (`1-4461771225`, `python-bb31e9`), the company half uses
+  the NFC-casefold name hash with the fragment as prefix (`ai-d35210`). Latin letters that
+  also lack a decomposition (`ø`, `æ`, `ß`, `ł`) are deliberately not counted, so `Ørsted`
+  still keys as `rsted` and a live Danish `seen_jobs.json` does not re-key; an existing
+  mixed-script entry re-keys once on the next scrape and `--audit` lists it under
+  `keys_not_matching_current_rule`, the same one-time drift #502 accepted. Seven new cases;
+  the four collision cases fail on master.
+
 - **`verify_pdf.py --ascii-dates` no longer reads a year-like run inside a longer number as a
   date** - the year pattern had no digit boundaries, so `2000` inside `120000` or `12000` made
   `Grew budget DKK 120000–200000` and `12000–15000 events/s` fail `/apply` Step 5d as
