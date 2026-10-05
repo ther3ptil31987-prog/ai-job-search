@@ -70,6 +70,63 @@ class MakeKey(unittest.TestCase):
         self.assertTrue(is_canonical(key))
         self.assertFalse(key.startswith("_"))
 
+    def test_one_url_keeps_one_key_when_a_non_latin_title_is_re_listed(self):
+        # freehire is the shipped multi-market portal, and its public API
+        # returns Cyrillic and Greek titles. Its real slugs carry no run of six
+        # digits, so the numeric-id branch above never fires for them and the
+        # hash is the only key half left. Hashing the title alongside the URL
+        # made that hash move whenever a portal re-listed the same posting with
+        # the title altered - including a mere case change, which this portal
+        # really does emit ("Инженер" and "инженер" both appear).
+        #
+        # URL and slug are real values from freehire's public API, not
+        # constructed: https://freehire.me/api/v1/agent/jobs/search?q=инженер
+        url = "https://freehire.me/jobs/inzhener-ooo-chen-hlk3qjfg"
+        company = "ООО Чен"
+        first = make_key(company, "Инженер", url=url)
+        recased = make_key(company, "инженер", url=url)
+        retitled = make_key(company, "Инженер-механик", url=url)
+        self.assertTrue(is_canonical(first))
+        self.assertEqual(first, recased)
+        self.assertEqual(first, retitled)
+
+    def test_distinct_urls_still_get_distinct_keys(self):
+        # The counterpart to the above: collapsing title variants must not
+        # collapse two genuinely different postings from one company. Both
+        # slugs are real freehire values.
+        company = "ООО Чен"
+        a = make_key(company, "Инженер", url="https://freehire.me/jobs/inzhener-ooo-chen-hlk3qjfg")
+        b = make_key(company, "Инженер", url="https://freehire.me/jobs/inzhener-mup-g-khabarovska-tep")
+        self.assertNotEqual(a, b)
+
+
+class CompanyFallbackCLI(unittest.TestCase):
+    def key_for(self, company, url="https://example.com/jobs/123456"):
+        proc = subprocess.run(
+            [sys.executable, str(TOOL), "--company", company,
+             "--title", "Software Engineer", "--url", url],
+            capture_output=True, text=True, encoding="utf-8", check=True,
+        )
+        return proc.stdout.strip()
+
+    def test_distinct_non_latin_companies_have_distinct_keys(self):
+        keys = [self.key_for(company) for company in ("腾讯", "阿里巴巴", "")]
+        self.assertEqual(len(set(keys)), 3)
+        self.assertTrue(all(is_canonical(key) for key in keys))
+
+    def test_company_fallback_is_stable_across_case_normalization_and_urls(self):
+        for first, second in (("КОМПАНИЯ", "компания"), ("ガンホー", "カ\u3099ンホー")):
+            with self.subTest(first=first, second=second):
+                self.assertEqual(
+                    self.key_for(first),
+                    self.key_for(second, "https://example.com/jobs/654321"),
+                )
+
+    def test_missing_company_and_existing_ascii_keys_are_unchanged(self):
+        self.assertEqual(self.key_for(""), "unknown-company_software-engineer")
+        self.assertEqual(self.key_for("  "), "unknown-company_software-engineer")
+        self.assertEqual(self.key_for("Acme Corp"), "acme-corp_software-engineer")
+
 
 class CanonicalAndLegacyShape(unittest.TestCase):
     def test_canonical_accepts_company_underscore_title(self):
@@ -98,7 +155,7 @@ class AuditCLI(unittest.TestCase):
             json.dump({"seen": seen}, fh)
             path = fh.name
         proc = subprocess.run(
-            [sys.executable, str(TOOL), "--audit", path], capture_output=True, text=True
+            [sys.executable, str(TOOL), "--audit", path], capture_output=True, text=True, encoding="utf-8"
         )
         return json.loads(proc.stdout), proc.returncode
 

@@ -84,7 +84,12 @@ def _cap(slug: str, limit: int) -> str:
 
 def make_key(company: str, title: str, url: str = "") -> str:
     """The canonical seen_jobs.json key for one posting."""
-    company_slug = _cap(slugify(company), COMPANY_MAX) or "unknown-company"
+    company_slug = _cap(slugify(company), COMPANY_MAX)
+    if not company_slug:
+        name = unicodedata.normalize("NFC", str(company or "").strip().casefold())
+        # An absent name stays unknown; a non-Latin name still has an identity.
+        digest = hashlib.sha1(name.encode("utf-8")).hexdigest()[:HASH_LEN]
+        company_slug = f"company-{digest}" if name else "unknown-company"
     title_slug = _cap(slugify(title), TITLE_MAX)
     if not title_slug:
         # No Latin characters in the title. The portal's own numeric id is the
@@ -94,7 +99,18 @@ def make_key(company: str, title: str, url: str = "") -> str:
             title_slug = match.group(1)
         else:
             basis = slugify(unicodedata.normalize("NFKD", str(title or url or "")))
-            digest = hashlib.sha1((str(title) + str(url)).encode("utf-8")).hexdigest()[:HASH_LEN]
+            # Hash the URL alone when there is one. The URL is the posting's
+            # identity; the title is not. Including the title made the key
+            # change whenever a portal re-listed the same posting with the
+            # title altered, which stores one job twice - the failure this
+            # whole helper exists to prevent. Portals whose ids carry no run
+            # of six digits never reach the branch above, so for them this
+            # hash is the only key half there is: freehire's real slugs look
+            # like "inzhener-ooo-chen-hlk3qjfg", and its Cyrillic and Greek
+            # titles slugify to nothing. With no URL, the title is all that
+            # is left to key on.
+            digest_basis = str(url) if url else str(title)
+            digest = hashlib.sha1(digest_basis.encode("utf-8")).hexdigest()[:HASH_LEN]
             title_slug = basis or f"untitled-{digest}"
     return f"{company_slug}_{title_slug}"
 
@@ -159,7 +175,21 @@ def audit(path: Path) -> int:
     return 1 if (malformed or duplicates) else 0
 
 
+def _force_utf8_output() -> None:
+    """Write UTF-8 whatever the host's default encoding is.
+
+    A piped stdout on Windows defaults to the ANSI code page (cp1252 on most
+    Western installs), so printing a company, title or file name outside it
+    raised UnicodeEncodeError before the workflow saw any output.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)  # absent on a StringIO under test
+        if reconfigure:
+            reconfigure(encoding="utf-8")
+
+
 def main() -> int:
+    _force_utf8_output()
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--company")
     ap.add_argument("--title")
