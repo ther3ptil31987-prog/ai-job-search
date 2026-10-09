@@ -15,6 +15,50 @@ per-file diff commands.
 
 ### Fixed
 
+- **`/reset profile` now targets the headings the shipped skill files actually have**
+  (`.claude/commands/reset.md` Step 3, `tests/test_reset_command.py`) - two of its Step 3
+  targets had drifted. The `05-cv-templates.md` step anchored on a section beginning
+  `**Profile statement templates`, a line the guide has never contained (its heading is
+  `**Create 2-3 profile statement templates for your main role types:**`), so the wipe found
+  nothing: the user's role-tailored profile statements, and any `*[Used for: ...]*`
+  statements `/setup` Path A extracted from archived applications, survived a reset that
+  reported success. The `02-behavioral-profile.md` skeleton used headings the shipped file
+  does not have (`Strongest Behavioral Traits`, `How I Work Best`, a truncated `Growth Areas`)
+  and dropped `## Core Behavioral Drives` - the assessment table the shipped file carries - so
+  one reset left the file's headings permanently different
+  from every other fork's, with nothing to recreate the table. The anchor now names the real
+  heading and the replacement re-emits it; the skeleton carries the shipped headings in order.
+  `01-candidate-profile.md` and `07-interview-prep.md` were already correct. Two new tests
+  derive both checks from the shipped files, so a renamed heading fails until `/reset`
+  follows it; both fail on master.
+
+- **The `/apply` host-check test derives its installed-portal hosts from the skills tree
+  instead of a hand-copied set** (#497, `tests/test_apply_host_check.py`) - `SHIPPED_PORTAL_HOSTS`
+  was six names typed into the test and nothing tied it to anything: a portal added by
+  `/add-portal` fetches from a host the copy never heard of, so its postings reached `/apply`
+  classified "unverified" while the suite stayed green, and a dropped portal left a stale
+  name behind. Rule 1 in `apply.md` defines an installed portal as "any configured job portal
+  in `.agents/skills/`", so that tree is now the source: the host literals in each
+  `*-search/cli/src/**/*.ts` (one `BASE_URL` per shipped CLI, `www.` dropped so apex and
+  subdomain both match), discovery by installation rather than by the `enabled:` flag
+  because an installed-but-disabled board is still a legitimate source for a pasted posting.
+  `classify_posting_host`'s default is that discovered set, and a new test class asserts that
+  every installed portal has a discoverable host and that each host classifies as
+  `installed_portal` at the apex, under `www.` and under a subdomain. The ATS apex list stays
+  the fixed set it is; parsing `apply.md`'s example list was deliberately not done, since a
+  parser keyed on prose wording is the next thing to go stale. Reported by Holo-Eter.
+
+- **`/expand` and `/setup` now append behavioral findings to sections `02-behavioral-profile.md`
+  actually has** (`.claude/commands/expand.md` Step 5, `.claude/commands/setup.md` Step A7,
+  `tests/test_expand_command.py`, `tests/test_setup_command.py`) - both told the model to add
+  to "Strongest Behavioral Traits" and "How I Work Best" / "How [Candidate] Works Best" while
+  also saying "match existing structure", but the shipped file's headings are "Strongest
+  Behaviors" and "How You Work Best", so an inferred trait either opened a duplicate
+  near-identical section or was dropped. The companion to #519, which fixed the same drift in
+  `/reset`'s skeleton; the maintainer asked for this half as its own PR. Both bullets now name
+  the shipped headings, and a derived test in each command's suite reads the quoted section
+  names and requires each to be a `##` heading of the shipped file; both fail on master.
+
 - **`jobnet-search` and `jobdanmark-search` search results now carry the contract's `id`
   field** (`search.ts` and `search-normalization.test.ts` in both CLIs, both `SKILL.md`s) -
   `/add-portal`'s contract says every search result has at least `id`, `title`, `company`,
@@ -52,13 +96,17 @@ per-file diff commands.
   everyday Russian listings on freehire, the shipped multi-market portal. The fold is now
   treated as lossy whenever it drops a letter outside the Latin script, and the existing
   fallbacks take over: the title half uses the portal's numeric id or the URL hash with the
-  fragment kept as a readable prefix (`1-4461771225`, `python-bb31e9`), the company half uses
+  fragment kept as a readable prefix (`1-4461771225`, `python-fb29d7`), the company half uses
   the NFC-casefold name hash with the fragment as prefix (`ai-d35210`). Latin letters that
   also lack a decomposition (`ø`, `æ`, `ß`, `ł`) are deliberately not counted, so `Ørsted`
   still keys as `rsted` and a live Danish `seen_jobs.json` does not re-key; an existing
   mixed-script entry re-keys once on the next scrape and `--audit` lists it under
   `keys_not_matching_current_rule`, the same one-time drift #502 accepted. Seven new cases;
-  the four collision cases fail on master.
+  the four collision cases fail on master. A follow-up keeps the rule inside its own case:
+  an empty title whose URL carries no six-digit run keys on the URL-derived basis alone
+  (`acme_https-example-com-jobs-abc-xyz`) exactly as before, where the first cut had started
+  appending the digest - unreachable from `/scrape`, which always passes a title, but a key
+  is a pure function of the posting and should not move for a case the rule was never about.
 
 - **`verify_pdf.py --ascii-dates` no longer reads a year-like run inside a longer number as a
   date** - the year pattern had no digit boundaries, so `2000` inside `120000` or `12000` made
