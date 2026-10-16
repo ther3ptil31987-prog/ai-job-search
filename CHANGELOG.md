@@ -27,7 +27,43 @@ per-file diff commands.
   `trustedDependencies`, the same set `security_guards.py` forbids in-tree, so a borrowed portal
   carrying one is read before it runs. `--dry-run` lists what it would install.
 
+### Changed
+
+- **`/apply` and `/rank` route matching portal URLs to installed CLI `detail` before `WebFetch`**
+  (#535, `.claude/commands/apply.md` Step 0, `.claude/commands/rank.md` Step 2,
+  `.claude/skills/job-application-assistant/09-web-research.md`) - job portal URLs pasted
+  into `/apply` or evaluated in batch by `/rank` now invoke the matching installed portal CLI's
+  `detail <url> --format plain` command first, avoiding bot-detection 403s and login walls on
+  aggregator boards before falling back to `WebFetch`. Escalation order in `09-web-research.md`
+  places portal CLI detail as the first rung (`framework_version: 1.1.1 -> 1.1.2`).
+
+- **`/apply` Step 5e names explicit cleanup shell commands for build intermediates**
+  (#531, `.claude/commands/apply.md`) - the step previously described deleting `.aux`/`.log`/`.out`
+  in prose, leaving artifact cleanup vulnerable to being skipped by agents. It now specifies explicit
+  `rm` commands for stock/custom LaTeX toolchains and redirected `build/` directories, timed after
+  log-inspecting steps 5b-5d complete, and explicitly preserves template assets (`cover.cls`,
+  `OpenFonts/`, custom template files).
+
 ### Fixed
+
+- **`jobnet-search` routes external ads to employer `jobAdUrl` rather than broken `find-job` links**
+  (#538, `.agents/skills/jobnet-search/cli/src/commands/search.ts`, `.agents/skills/jobnet-search/cli/README.md`,
+  `.agents/skills/jobnet-search/cli/tests/search-normalization.test.ts`) - external job postings on
+  Jobnet (`isExternal: true`) point to `/find-job/{jobAdId}`, which returns 404, while the Jobnet API
+  carries the destination in `jobAdUrl`. The search command now routes external ads to `jobAdUrl` when
+  a valid http(s) destination is present, falling back to `/find-job/{jobAdId}` when missing or
+  non-http(s) to preserve distinct URLs for `/scrape` deduplication. Both `url` and `jobAdUrl`
+  validate the scheme the same way. Reported with live testing by NishilRathod.
+
+- **Fork-skip guards no longer run on a fork during a local test run** (`tests/_upstream.py`,
+  `tests/test_placeholder_integrity.py`, `tests/test_setup_command.py`,
+  `tests/test_upstream_checkout.py`) - the fork skip read
+  `os.environ.get("GITHUB_REPOSITORY", UPSTREAM)`, so with the variable unset a local
+  run fell back to upstream and the placeholder guards fired on every personalized fork,
+  leaving its suite permanently red after `/setup`. The three skips now share one helper:
+  `GITHUB_REPOSITORY` decides when set, otherwise the checkout's `origin` remote is matched
+  against the upstream repo (https and ssh forms, optional `.git` suffix), and an
+  undeterminable checkout assumes upstream. Tests only, no `framework_version` bump.
 
 - **`linkedin-search` and `freehire-search` reject invalid `--format` flags with `BAD_ARG`** (#555,
   `.agents/skills/linkedin-search/cli/src/cli.ts`, `.agents/skills/freehire-search/cli/src/cli.ts`) -
@@ -119,6 +155,11 @@ per-file diff commands.
   `01-candidate-profile.md` and `07-interview-prep.md` were already correct. Two new tests
   derive both checks from the shipped files, so a renamed heading fails until `/reset`
   follows it; both fail on master.
+
+- **`freehire-search` rejects empty `--facet` filters before requesting jobs** (#561) -
+  a bare flag (including one after a valid repeated facet), `salary_min=`, or a
+  comma-separated value list containing only whitespace now returns `BAD_ARG` and
+  exits 1 instead of silently dropping the filter and running a broader search.
 
 - **The `/apply` host-check test derives its installed-portal hosts from the skills tree
   instead of a hand-copied set** (#497, `tests/test_apply_host_check.py`) - `SHIPPED_PORTAL_HOSTS`
