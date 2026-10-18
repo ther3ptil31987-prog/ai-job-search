@@ -28,6 +28,7 @@ Stdlib only. Exit 0 on success, 1 with a failure list otherwise.
 """
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -279,10 +280,39 @@ def check_package_manifests() -> None:
             )
 
 
+def check_tracked_node_modules() -> None:
+    """Fail on any tracked path with a ``node_modules`` component.
+
+    ``.gitignore``'s old ``node_modules/`` rule matched directories only, so a
+    symlink or plain file named ``node_modules`` (a contributor's local symlink
+    to an absolute path, #623) was committed, broke ``bun install`` in CI with a
+    dangling link, and checked out as a text file on Windows. The rule now has
+    no trailing slash; this check catches what the rule cannot, such as a copy
+    force-added or inherited from before the rule changed. Skipped quietly when
+    the tree is not a git checkout (the guard also runs from a bare copy).
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, check=False
+        )
+    except OSError:
+        return
+    if proc.returncode != 0:
+        return
+    for rel in proc.stdout.decode("utf-8", errors="replace").split("\x00"):
+        if rel and "node_modules" in rel.split("/"):
+            errors.append(
+                f"tracked path inside node_modules: {rel!r}. Installed dependencies "
+                "(or a symlink standing in for them) must never be committed: run "
+                "`git rm --cached` on it; .gitignore's `node_modules` rule keeps it out."
+            )
+
+
 def main() -> int:
     check_permissions()
     check_gitignore()
     check_package_manifests()
+    check_tracked_node_modules()
     if errors:
         print(f"security_guards: {len(errors)} failure(s)")
         for err in errors:
@@ -290,7 +320,7 @@ def main() -> int:
         return 1
     print(
         "security_guards: OK (permissions allowlist, hooks allowlist, gitignore rules, "
-        "package manifests)"
+        "package manifests, no tracked node_modules)"
     )
     return 0
 

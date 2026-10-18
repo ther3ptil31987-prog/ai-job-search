@@ -28,13 +28,16 @@ tree, the profile files from /setup Step 3's own headings - so a new drop
 folder or a new /setup target fails this test until /reset covers it.
 """
 import re
+import shutil
 import subprocess
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 REPO = Path(__file__).resolve().parent.parent
 RESET = REPO / ".claude" / "commands" / "reset.md"
 SETUP = REPO / ".claude" / "commands" / "setup.md"
+BASH = shutil.which("bash")
 
 
 def tracked_document_subfolders():
@@ -73,16 +76,26 @@ class TestResetCoversEveryDocumentsSubfolder(unittest.TestCase):
             f"so the user confirms a deletion list that omits them: {missing}",
         )
 
+    @unittest.skipUnless(BASH, "requires Bash to replay the documented /reset command")
     def test_delete_block_removes_every_subfolder(self):
-        deleted = set(re.findall(r"rm -r?f documents/(\w+)/", self.text))
-        missing = sorted(self.folders - deleted)
-        self.assertEqual(
-            missing,
-            [],
-            "reset.md's delete block has no rm line for these documents/ "
-            'subfolders, yet the command then claims "The `documents/` '
-            f'folder is now empty.": {missing}',
-        )
+        # Exercise the deletion contract, rather than requiring one particular
+        # spelling of rm. Keep deriving the folder set from git so a newly
+        # tracked document root still has to be handled by the real command.
+        section = self.text.split("### Documents reset", 1)[1]
+        script = re.search(r"```bash\n(.*?)```", section, re.S).group(1)
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            for folder in self.folders:
+                path = root / "documents" / folder
+                path.mkdir(parents=True)
+                (path / ".gitkeep").write_text("Keep scaffold.\n")
+                (path / "user.txt").write_text("Remove document.\n")
+            result = subprocess.run([BASH, "-c", script], cwd=root, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for folder in self.folders:
+                path = root / "documents" / folder
+                self.assertEqual([entry.name for entry in path.iterdir()], [".gitkeep"])
+                self.assertEqual((path / ".gitkeep").read_text(), "Keep scaffold.\n")
 
 
 def section(text: str, start: str, end: str) -> str:
@@ -251,6 +264,28 @@ class TestResetTargetsTheHeadingsTheShippedFilesHave(unittest.TestCase):
                     get_framework_version_from_text(shipped),
                     f"a reset must leave {filename}'s framework_version readable and unchanged",
                 )
+
+    def test_candidate_skeleton_keeps_the_languages_table_under_identity(self):
+        # 04-job-evaluation.md's Language Gate and job-scraper/search-queries.md
+        # both read "your Languages table" from 01-candidate-profile.md. The
+        # skeleton had `## Identity` with nothing under it, so after a reset the
+        # gate and the scraper looked for a table the file no longer had. Both
+        # the `### Languages` heading and the table header row are derived from
+        # the shipped file; the placeholder data row is deliberately not kept.
+        shipped = (SKILL_DIR / "01-candidate-profile.md").read_text(encoding="utf-8")
+        start = shipped.index("### Languages")
+        header_rows = [
+            line for line in shipped[start:].splitlines()[1:]
+            if line.startswith("|")
+        ][:2]
+        self.assertEqual(len(header_rows), 2, "the shipped Languages table must have a header and a separator row")
+        block = skeleton_block(self.reset, "01-candidate-profile.md")
+        identity = block[block.index("## Identity"): block.index("## Education")]
+        self.assertIn("### Languages", identity, "the Languages table must sit under Identity, as shipped")
+        for row in header_rows:
+            with self.subTest(row=row):
+                self.assertIn(row, identity)
+        self.assertNotIn("[LANGUAGE]", block, "a reset must not reintroduce a placeholder data row")
 
     def test_partial_anchors_exist_in_the_files_they_target(self):
         # (reset.md anchor phrase, file, heading the replacement must re-emit)

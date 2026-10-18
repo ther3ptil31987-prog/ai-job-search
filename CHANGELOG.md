@@ -44,7 +44,147 @@ per-file diff commands.
   log-inspecting steps 5b-5d complete, and explicitly preserves template assets (`cover.cls`,
   `OpenFonts/`, custom template files).
 
+- **`/rank` retries a posting it could not fetch instead of expiring it** (#534,
+  `tools/rank_state.py`, `.claude/commands/rank.md`) - a data-model change: scoring agents
+  now return a third status, `unreachable` (with a short `fetch_error`), when retrieval still
+  fails after the `09-web-research.md` escalation order (401/403, login wall, 404, timeout,
+  5xx, empty page), and keep `expired` for positive evidence the posting is closed (closed
+  page, 410, redirect to a listing page, passed deadline). Before, both became `expired`,
+  which `candidates` never selects again, so a transient failure on ranking day removed a
+  live job from the pipeline and the report presented it as closed. `candidates` now selects
+  `unreachable` alongside `new`; `apply` increments `fetch_attempts` and stores
+  `last_fetch_error`, and after 3 attempts with at least 48 hours between the first and the
+  last it writes `expired` with `expired_reason: "unreachable"` and reports the job once under
+  "Gave up, check manually" with its URL, so a login-walled live posting is still seen by a
+  human. The 48-hour floor keeps a scheduled run plus a manual one on the same day from
+  burning every attempt on one outage. A failed fetch on a posting whose stored deadline has
+  already passed still expires at once, as on the scored path, rather than being retried and
+  listed as possibly live. `rank_state.py` owns the status set (`AGENT_STATUSES`) and a test
+  pins `rank.md`'s JSON contract to it. `09-web-research.md`'s give-up step now marks a
+  `/rank` entry `unreachable` rather than `expired` (`framework_version: 1.1.2 -> 1.1.3`), so
+  an agent following it cannot write a 403 off as closed. No migration: no existing entry
+  carries the new status. Reported by @ai-tvang, who also proposed the time floor and the
+  give-up listing.
+
 ### Fixed
+
+- **`.gitignore` ignores `node_modules` without a trailing slash, and `security_guards.py` fails on any tracked `node_modules` path** (`.gitignore`, `tools/security_guards.py`, `tests/test_security_guards.py`) - the old `node_modules/` rule matched directories only, so a symlink named `node_modules` pointing at a contributor's absolute path was committed in a PR, broke `bun install` in CI with a dangling link and checked out as a text file on Windows. The rule loses its slash, and the guard now lists every tracked path with a `node_modules` component (skipped quietly outside a git checkout). Also qualifies the one bare `seen_jobs.json` mention left in `README.md` after #617.
+
+- **`job_key.py --audit` reports a state file that is not an object of entries** (#626) (`tools/job_key.py`,
+  `tests/test_job_key.py`) - a top-level JSON array, or an entry that is a string or number, crashed the
+  audit with an `AttributeError` traceback on `.get`, although the function already had a one-line error
+  for an unusable `seen` value. Both now print a one-line message naming the problem and exit 1.
+
+- **`freehire-search` emits the contract's `YYYY-MM-DD` date instead of the API's ISO timestamp** (#621)
+  (`.agents/skills/freehire-search/cli/src/helpers.ts`, `tests/parsing.test.ts`,
+  `tests/commands.test.ts`, `SKILL.md`) - `toResult` passed `posted_at` through verbatim, so
+  search and detail JSON carried `"date": "2026-07-06T00:00:00Z"` while every other portal CLI
+  emits the date part only and `/scrape` stores it as `posted_date: "YYYY-MM-DD"`. The table
+  and plain renderers already cut the value to ten characters, so only JSON consumers - the
+  `/scrape` path - saw the raw timestamp. A `contractDate()` helper now cuts the timestamp to
+  its date part and yields `null` for an absent or non-date value; the two tests that pinned
+  the raw timestamp now expect the date and fail on master, plus three cases on the helper.
+
+- **`/rank`, `/notion-sync` and `/upskill` name `job_scraper/seen_jobs.json` by its full path** (#617)
+  (follow-up to #608, `.claude/commands/rank.md`, `.claude/commands/notion-sync.md`,
+  `.claude/skills/upskill/SKILL.md`, `tests/test_scrape_seen_jobs_path.py`) - #608 qualified the
+  path in `/scrape`, where the file is written; the three readers still said the bare
+  `seen_jobs.json`, which an agent can resolve to the repo root, outside the ignore rule. The
+  guard test now covers all four specs, and `test_notion_sync_command.py` pins the qualified
+  phrase.
+
+- **Framework version checks compare marker values using Git-compatible paths on every platform** (#578, `tools/check_framework_version.py`) - quoting or spacing an unchanged version no longer exempts an accompanying guidance edit, hardening a latent bypass without changing legitimate version bumps.
+
+- **`/reset documents` clears nested and hidden user entries while preserving scaffolds** - cleanup retains tracked `.gitkeep` files and the README, with the complete inventory shown before confirmation (#580).
+
+- **`jobindex-search` examples follow the search CLI contract** - the posted-today example includes a required query, unsupported flags are removed, and regression checks accept LF and CRLF checkouts (#579).
+
+- **`convert_salary_excel.py` converts the IDA workbook again** (#615, `tools/convert_salary_excel.py`,
+  `tests/test_convert_salary_excel.py`) - the workbook heads its company column "Firmanavn og by",
+  and since #75 made header matching whole-token only, "firma" no longer matched inside "Firmanavn",
+  so both sheets were skipped with "Could not find header row" and the converter exited 1 on the
+  repository's own demonstration data. "firma" is now a compound token, like the other glued Danish
+  headers; every other workbook converts byte-identically.
+
+- **`/scrape`'s entry schema lists the `unreachable` status** (#615, `.claude/skills/job-scraper/SKILL.md`) -
+  follow-up to #564: the `status` enum in the `seen_jobs.json` schema block still read
+  `new/skipped/ranked/expired` while the dedup rule two sections down already named `unreachable`.
+
+- **`/scrape` names `job_scraper/seen_jobs.json` by its full path in every step** (#608,
+  `.claude/skills/job-scraper/SKILL.md`, `tests/test_scrape_seen_jobs_path.py`) - seven references
+  after Step 0, including the Step 4 write instruction, used the bare filename, and an assistant
+  following them wrote the state file at the repository root, where the
+  `**/job_scraper/seen_jobs.json` ignore rule does not reach it; one fork committed its scrape
+  history that way. Every reference now carries the directory, and a test fails on any bare mention.
+
+- **`salary_lookup.py` accepts a BOM-prefixed `salary_data.json`** (#594, #602, `salary_lookup.py`,
+  `tests/test_salary_lookup.py`) - the data file is opened with `utf-8-sig`, so a file saved by
+  Windows PowerShell `Out-File`/`Set-Content` or by an editor that prepends a byte-order mark now
+  validates and loads instead of exiting 1 with "Unexpected UTF-8 BOM". Plain UTF-8 files read
+  identically, and malformed JSON after a BOM still reports its line and column. Reported by
+  rahul05ranjan; same class as #485 and #509.
+
+- **Upstream triage emits cherry-pick suggestions in dependency order**
+  (`tools/upstream_triage.py`) - ready-to-run commands now list ancestors before
+  descendants, so a follow-up patch is not suggested before the change it edits.
+  The report tables remain newest first; the tool still executes no Git mutations.
+
+- **`/upskill` and `/notion-sync` now name the field ranked entries actually carry when joining
+  them to tracker rows** (`.claude/skills/upskill/SKILL.md` Step 3, `.claude/commands/notion-sync.md`
+  Step 2, `tests/test_upskill_skill.py`, `tests/test_notion_sync_command.py`) - both said to match
+  "on company + role" with "casefold + strip on both fields", but a `seen_jobs.json` entry has
+  `title` and no `role` key (the job-scraper schema), so read literally the lookup never matched:
+  `/upskill` then weighted the same job twice, once as a tracker row and once as a ranked entry,
+  the double-count its dedupe step exists to prevent, and `/notion-sync` split one job into two
+  rows with different Keys. `tools/rank_state.py` already does the cross-name join (tracker
+  `role` against entry `title`); both specs now say so. Two derived tests read the entry schema
+  and require the join wording to name `title` for the entry and `role` for the tracker; they
+  fail on master.
+
+- **`/reset profile` keeps the `### Languages` table header under Identity**
+  (`.claude/commands/reset.md` Step 3, `tests/test_reset_command.py`) - `04-job-evaluation.md`'s
+  Language Gate and `job-scraper/search-queries.md`'s query-language generation both read "your
+  Languages table" from `01-candidate-profile.md`, but the skeleton `/reset` wrote left
+  `## Identity` empty, so after a reset `/rank` and `/scrape` looked for a table the file no
+  longer had. The skeleton now carries `### Languages` and the table's header and separator
+  rows, derived from the shipped file in the test; the placeholder data row is deliberately
+  not reintroduced. Follow-up noted on #532.
+
+- **`05-cv-templates.md` snippets write the `\cventry` date argument with an ASCII hyphen, as the same
+  file's own rule requires** (`.claude/skills/job-application-assistant/05-cv-templates.md`,
+  `framework_version: 1.4.6 -> 1.4.7`) - the in-progress-qualification snippet under "In-progress
+  qualifications must say so explicitly" wrote `\cventry{2025--2026}`, the `\needspace` snippet
+  under the orphaned-entry fix wrote `\cventry{YEAR--YEAR}`, and the in-progress section offered a date field
+  of `2025–present` (U+2013) as an accepted alternative. All three are values copied straight into a
+  CV, so an assistant following the file produced exactly the en-dash that **Date fields must be ASCII
+  ranges** forbids 130 lines further down, and that `/apply` Step 5d then rejects: inserting the
+  in-progress snippet as shipped into `cv/main_example.tex` and compiling with `lualatex` makes
+  `python tools/verify_pdf.py cv/main_example.pdf --pages 2 --ascii-dates` exit 1 with
+  `U+2013 in '... 2025–2026'`, where the unmodified template passes. #276 fixed the template's own
+  date fields and added the rule section, but these snippets predate it (#210) and were missed. The
+  deliberate negative example (`% en-dash, may not`) and the illustrations of the forms `--ascii-dates`
+  catches are left as they are.
+
+- **`verify_pdf.py --ascii-dates` no longer reads a numeric range with year-shaped ends as a
+  date** - #512 bounded the year to four standalone digits, but `EUR 1500–2000 per month` and
+  `2000–5000 requests per second` still failed `/apply` Step 5d: each has a four-digit number
+  next to the dash that happens to fall in 1900-2099. A range whose two ends are both bare
+  numbers (the whole whitespace-delimited token, outer punctuation stripped) now counts as a
+  date only when both are years, so the salary band and the throughput range pass, while
+  `2016–2024`, `1990–2010` and `2016 – Present` still fail as before and a numerically
+  formatted range (`03/2016–07/2024`, `01.2016 – 12.2024`, `2016-03–2024-07`, `2016/17–2018/19`)
+  is not a bare number on either side and is still caught. Three new `test_verify_pdf.py`
+  cases; the quantity one fails on master.
+
+- **`upstream_triage` forces UTF-8 stdout and decodes git output as UTF-8** (#544,
+  `tools/upstream_triage.py`, `tests/test_tools_utf8_output.py`) - like the other Python tools,
+  the triage report now calls `_force_utf8_output()` on startup and decodes git subprocess
+  streams with `encoding="utf-8", errors="replace"`. Under Windows default ANSI code pages (such as
+  `cp1252`), upstream commits with Cyrillic, CJK, or emoji characters in their subjects raised
+  `UnicodeEncodeError` when writing stdout or `UnicodeDecodeError` in subprocess pipes, terminating
+  triage runs before the report could be emitted.
+
+- **`jobnet-search occupations` preserves full identifiers in table output** - ESCO URIs and UUIDs are no longer truncated, with documentation-based regression checks covering LF and CRLF checkouts (#586).
 
 - **`jobnet-search` routes external ads to employer `jobAdUrl` rather than broken `find-job` links**
   (#538, `.agents/skills/jobnet-search/cli/src/commands/search.ts`, `.agents/skills/jobnet-search/cli/README.md`,
@@ -65,12 +205,16 @@ per-file diff commands.
   against the upstream repo (https and ssh forms, optional `.git` suffix), and an
   undeterminable checkout assumes upstream. Tests only, no `framework_version` bump.
 
+- **Upstream companion commands retain the selected refs** (#591) - generated follow-up commands now preserve custom base and head references instead of silently comparing the defaults.
+
 - **`linkedin-search` and `freehire-search` reject invalid `--format` flags with `BAD_ARG`** (#555,
   `.agents/skills/linkedin-search/cli/src/cli.ts`, `.agents/skills/freehire-search/cli/src/cli.ts`) -
   unrecognized `--format` flags previously fell back silently to `"json"` with exit code 0, masking
   formatting typos and violating the CLI contract. Both CLIs now validate format arguments strictly
   (`json|table|plain` for search, `json|plain` for detail) and exit 1 with `{ error, code: "BAD_ARG" }`
   on invalid options.
+
+- **Upstream checks report incomplete comparisons** (#583) - missing base or head framework files now remain visible as incomplete comparisons instead of being reported as unchanged.
 
 - **`jobdanmark-search detail` no longer keeps a malformed closing tag as text on the
   rendered-HTML branch** (#525, `detail.ts`, `tests/detail-parsing.test.ts`) - a live page wrote
@@ -85,6 +229,8 @@ per-file diff commands.
   the Jobtype item and a description paragraph (fails on master), and an entity-encoded
   `<div>` in a description that stays in the text.
 
+- **Upstream checks distinguish new files from fork deletions** (#585) - a path absent from the base is reported as newly added upstream instead of incorrectly treated as a deletion in the fork.
+
 - **`/add-portal` includes the `.agents` prefix in generated `allowed-tools`** (#545,
   `.claude/commands/add-portal.md`, `tests/test_add_portal_command.py`) - the specification template
   for the new portal's `SKILL.md` frontmatter wrote `allowed-tools: Bash(bun run skills/<name>/cli/src/cli.ts *)`
@@ -92,6 +238,8 @@ per-file diff commands.
   listed command when that skill is invoked, so a generated portal invoked on its own granted a
   command that does not exist and prompted instead; the string now names the real path, matching
   the six shipped `SKILL.md` files.
+
+- **Salary workbook conversion accepts Unicode whitespace grouping** (#592) - numeric cells written as text with non-breaking or narrow non-breaking grouping spaces now parse without losing their values.
 
 - **`robots_check` unquotes incoming query strings and restricts `$` anchors to pattern end**
   (#543, `tools/robots_check.py`, `tests/test_robots_check.py`) - two path-matching edge cases in
@@ -104,6 +252,8 @@ per-file diff commands.
   RFC 9309 section 2.2.3, `$` is an end anchor only at the end of the pattern, and internal `$`
   characters are now matched literally.
 
+- **Salary workbook conversion prefers exact identity headers** (#571) - exact company column names take precedence over incidental substring matches in other headers.
+
 - **CV template guidance aligns geometry scale with master template** (#553,
   `.claude/skills/job-application-assistant/05-cv-templates.md`, `tests/test_latex_guidance.py`) -
   the preamble snippet in `05-cv-templates.md` specified `\usepackage[scale=0.77]{geometry}`,
@@ -111,11 +261,15 @@ per-file diff commands.
   has been aligned to `scale=0.80`, preventing tighter margins and unwanted page overflow during
   CV generation, and a test now guards that the two files stay in sync.
 
+- **Salary workbook conversion skips chart-only tabs** (#590) - chartsheets no longer cause iteration failures while worksheet data continues to be converted.
+
 - **`.claude/settings.local.json` is ignored in `.gitignore` and pinned in security guards** (#551,
   `.gitignore`, `tools/security_guards.py`) - Claude Code stores machine-local settings and
   ad-hoc tool approvals in `.claude/settings.local.json`. The file is now excluded from version
   control in `.gitignore` and pinned in `REQUIRED_IGNORE_RULES` to prevent fork users from
   accidentally committing local session configurations.
+
+- **Salary lookups distinguish missing indexes from suppression** (#584) - count-only data displays an unavailable index without implying that a privacy-suppression threshold was applied.
 
 - **`/rank` retires scored jobs whose preserved deadline has passed**
   (`tools/rank_state.py`, `tests/test_rank_state.py`) - a fresh `null` deadline
@@ -124,6 +278,8 @@ per-file diff commands.
   so it could not correct the state or shortlist. Apply now expires the job
   before changing rank metadata; current-day deadlines, explicit future
   extensions, invalid dates, dry runs, and scoring errors keep their behavior.
+
+- **Salary workbook conversion skips whitespace-only companies** (#576) - blank-looking company cells no longer produce empty company entries.
 
 - **`/reset profile` keeps the `framework_version` frontmatter on the two files it rewrites**
   (`.claude/commands/reset.md` Step 3, `tests/test_reset_command.py`) - the full-file skeletons
@@ -138,6 +294,7 @@ per-file diff commands.
   it would go stale on the next bump. A derived test applies each skeleton the way the step
   says and asserts the shipped file's version still parses out unchanged; it fails on master.
   Found while re-checking #519's class of drift.
+
 
 - **`/reset profile` now targets the headings the shipped skill files actually have**
   (`.claude/commands/reset.md` Step 3, `tests/test_reset_command.py`) - two of its Step 3
@@ -161,6 +318,8 @@ per-file diff commands.
   comma-separated value list containing only whitespace now returns `BAD_ARG` and
   exits 1 instead of silently dropping the filter and running a broader search.
 
+- **Salary lookups validate metadata before rendering** (#575) - malformed metadata produces an actionable error instead of a rendering traceback.
+
 - **The `/apply` host-check test derives its installed-portal hosts from the skills tree
   instead of a hand-copied set** (#497, `tests/test_apply_host_check.py`) - `SHIPPED_PORTAL_HOSTS`
   was six names typed into the test and nothing tied it to anything: a portal added by
@@ -177,6 +336,8 @@ per-file diff commands.
   the fixed set it is; parsing `apply.md`'s example list was deliberately not done, since a
   parser keyed on prose wording is the next thing to go stale. Reported by Holo-Eter.
 
+- **Danish portal CLIs reject missing option values** (#573) - value-taking flags followed by another option now fail before search dispatch instead of treating the next flag as the value.
+
 - **`/expand` and `/setup` now append behavioral findings to sections `02-behavioral-profile.md`
   actually has** (`.claude/commands/expand.md` Step 5, `.claude/commands/setup.md` Step A7,
   `tests/test_expand_command.py`, `tests/test_setup_command.py`) - both told the model to add
@@ -188,6 +349,8 @@ per-file diff commands.
   the shipped headings, and a derived test in each command's suite reads the quoted section
   names and requires each to be a `##` heading of the shipped file; both fail on master.
 
+- **`freehire-search` rejects missing named-option values** (#568) - value-taking search options now reject a missing value or another flag before dispatch.
+
 - **`jobnet-search` and `jobdanmark-search` search results now carry the contract's `id`
   field** (`search.ts` and `search-normalization.test.ts` in both CLIs, both `SKILL.md`s) -
   `/add-portal`'s contract says every search result has at least `id`, `title`, `company`,
@@ -198,6 +361,8 @@ per-file diff commands.
   equals `jobAdId` on jobnet and `slug` on jobdanmark, the native keys stay, nothing is
   renamed. The additive-contract test in each CLI now asserts `id` and its equality with the
   native key; both fail on master.
+
+- **Danish portal installation examples use the actual CLI directories** (#589) - documented install commands now include the `.agents/skills` prefix.
 
 - **`jobdanmark-search detail` renders a JSON-LD description as text instead of passing
   the markup through** (`.agents/skills/jobdanmark-search/cli/src/commands/detail.ts`,
@@ -213,6 +378,8 @@ per-file diff commands.
   gone - which is the shape the fallback already produces. A plain-text description is
   unchanged, an absent one stays `""`. The JSON-LD test that pinned the raw `<p>...</p>` now
   expects the text, plus two new cases; the HTML case fails on master.
+
+- **Valid portal flag tests stay offline** (#581) - success controls use local fixtures instead of depending on live job portals or their credentials.
 
 - **`job_key.py` no longer gives two postings one key when a title or company is partly
   non-Latin** (`tools/job_key.py`, `tests/test_job_key.py`) - the hash fallbacks from #487
@@ -245,6 +412,8 @@ per-file diff commands.
   a longer number is still caught. Two new `test_verify_pdf.py` cases; the numeric one fails
   on the unbounded pattern.
 
+- **`jobbank-search` preserves repeated filter values** (#577) - repeated documented filter options now retain all supplied values instead of only the last value.
+
 - **`check_framework_version.py`'s git diff read no longer crashes on non-ASCII framework-file
   content** (`tools/check_framework_version.py`) - `run_git()` called
   `subprocess.run(text=True)` without an explicit `encoding`, so output decoded via the host
@@ -272,6 +441,8 @@ per-file diff commands.
   caused by a focus filter or tracker exclusion takes the same path. Pinned by
   `test_step1_empty_candidates_still_sweeps_and_reports`, which fails against master's `rank.md`.
 
+- **`linkedin-search` preserves description structure** (#567) - job descriptions retain paragraph and list breaks instead of flattening them into one text block.
+
 - **`robots_check` no longer reads a leading BOM or an undecodable rule as permission**
   (`tools/robots_check.py`, `tests/test_robots_check.py`) - two decoding edge cases failed
   open, both flagged as follow-ups in #506. A robots.txt saved with a UTF-8 byte-order mark
@@ -290,6 +461,8 @@ per-file diff commands.
   `Disallow` cannot hide the line either; U+FFFD in a comment or another field stays
   harmless, and valid UTF-8 rules decide as before. Nine new tests; the seven that pin the
   fail-opens fail on master.
+
+- **Salary workbook conversion rejects non-finite text cells** (#572) - hand-typed `Infinity` or `NaN` text cells now produce validation errors instead of numeric-conversion tracebacks.
 
 - **`verify_layout.py` finds an orphaned entry header by where the text starts**
   (`tools/verify_layout.py`, `tests/test_verify_layout.py`) - the orphan rule compared line
@@ -322,6 +495,8 @@ per-file diff commands.
   non-Latin title on a portal without a numeric id will re-key once on the next scrape.**
   `python3 tools/job_key.py --audit` reports those entries under
   `keys_not_matching_current_rule`; it never rewrites them.
+
+- **Salary lookups preserve Unicode company identities and match ASCII-typed accented names such as `Nestle` to `Nestlé`, while retaining Nordic spelling variants** (#570).
 
 ## [1.7.2] - 2026-09-29
 

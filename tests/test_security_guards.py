@@ -416,6 +416,45 @@ class ManifestGuardTests(GuardRepoFixture):
         self.assertIn("no package.json files found", result.stdout)
 
 
+class TrackedNodeModulesTests(GuardRepoFixture):
+    """A committed node_modules entry (symlink, file or directory) fails the guard."""
+
+    def _git(self, *args):
+        return subprocess.run(
+            ["git", *args], cwd=self.root, capture_output=True, text=True, check=False
+        )
+
+    def _init_repo(self):
+        self._git("init", "-q")
+        self._git("config", "user.email", "t@example.com")
+        self._git("config", "user.name", "t")
+
+    def test_tracked_node_modules_file_fails(self):
+        # #623 shape: a file (or symlink, which git stores the same way) named
+        # node_modules under a CLI directory, slipped past the directory-only rule.
+        self._init_repo()
+        cli = self.root / ".agents" / "skills" / "x-search" / "cli"
+        cli.mkdir(parents=True)
+        (cli / "node_modules").write_text("/Users/someone/project/node_modules", encoding="utf-8")
+        self._git("add", "-f", ".agents/skills/x-search/cli/node_modules")
+        result = run_guards(self.root)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("tracked path inside node_modules", result.stdout)
+        self.assertIn("x-search/cli/node_modules", result.stdout)
+
+    def test_untracked_node_modules_directory_passes(self):
+        self._init_repo()
+        nm = self.root / ".agents" / "skills" / "x-search" / "cli" / "node_modules" / "dep"
+        nm.mkdir(parents=True)
+        (nm / "index.js").write_text("", encoding="utf-8")
+        result = run_guards(self.root)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_not_a_git_checkout_is_skipped(self):
+        result = run_guards(self.root)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
 class RealRepoTests(unittest.TestCase):
     def test_guards_pass_on_this_repo(self):
         # The live check CI runs: the actual repo tree must satisfy its own guards.
